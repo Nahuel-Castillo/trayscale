@@ -1,0 +1,6 @@
+# makepkg build artifacts (also keeps `go build ./...` from descending into them)
+/pkg/
+/src/
+/trayscale/
+*.pkg.tar.*
+*.log
