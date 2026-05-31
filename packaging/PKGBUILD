@@ -1,0 +1,40 @@
+# Maintainer: Nahuel Castillo <nahuelcastillo13@gmail.com>
+# Fork of trayscale: collapses Mullvad exit nodes to one row per city.
+pkgname=trayscale-mullvadcity
+pkgver=0.18.9
+pkgrel=1
+pkgdesc="Trayscale fork: Mullvad exit nodes collapsed to one row per city (auto-selects best node)"
+arch=('x86_64')
+url="https://github.com/Nahuel-Castillo/trayscale"
+license=('MIT')
+depends=('gtk4' 'libadwaita>=1:1.7')
+makedepends=('go' 'git' 'pkgconf')
+provides=('trayscale')
+conflicts=('trayscale')
+source=("git+https://github.com/Nahuel-Castillo/trayscale.git#branch=master")
+sha256sums=('SKIP')
+
+pkgver() {
+	cd "$srcdir/trayscale"
+	git describe --tags --always | sed 's/^v//;s/-/./g'
+}
+
+build() {
+	cd "$srcdir/trayscale"
+	export CGO_ENABLED=1
+	export GOFLAGS="-mod=readonly -modcacherw"
+	local version
+	version="$(git describe --tags --always)"
+	go build -v -trimpath \
+		-ldflags="-w -s -X 'deedles.dev/trayscale/internal/metadata.version=$version'" \
+		-o trayscale ./cmd/trayscale
+}
+
+package() {
+	cd "$srcdir/trayscale"
+	install -Dm755 trayscale "$pkgdir/usr/bin/trayscale"
+	install -Dm644 dev.deedles.Trayscale.png "$pkgdir/usr/share/icons/hicolor/256x256/apps/dev.deedles.Trayscale.png"
+	install -Dm644 dev.deedles.Trayscale.desktop "$pkgdir/usr/share/applications/dev.deedles.Trayscale.desktop"
+	install -Dm644 dev.deedles.Trayscale.metainfo.xml "$pkgdir/usr/share/metainfo/dev.deedles.Trayscale.metainfo.xml"
+	install -Dm644 dev.deedles.Trayscale.gschema.xml "$pkgdir/usr/share/glib-2.0/schemas/dev.deedles.Trayscale.gschema.xml"
+}
