@@ -32,15 +32,15 @@ type MullvadPage struct {
 	Page         *adw.StatusPage
 	LocationList *gtk.ListBox
 
-	locations map[string]*adw.ExpanderRow
-	exitNodes map[tailcfg.StableNodeID]*mullvadExitNodeRow
+	locations map[string]*adw.ExpanderRow // keyed by CountryCode
+	cities    map[string]*mullvadCityRow  // keyed by CityCode
 }
 
 func NewMullvadPage(a *App, status *tsutil.IPNStatus) *MullvadPage {
 	page := MullvadPage{
 		app:       a,
 		locations: make(map[string]*adw.ExpanderRow),
-		exitNodes: make(map[tailcfg.StableNodeID]*mullvadExitNodeRow),
+		cities:    make(map[string]*mullvadCityRow),
 	}
 	gutil.FillFromUI(&page, mullvadPageXML)
 
@@ -81,38 +81,56 @@ func (page *MullvadPage) Update(s tsutil.Status) bool {
 		return false
 	}
 
-	var subtitle string
-
-	var exitNodeID tailcfg.StableNodeID
-	if exitNode := status.ExitNode(); exitNode.Valid() {
-		exitNodeID = exitNode.StableID()
+	// Determine the active exit node and the city it belongs to.
+	exitNode := status.ExitNode()
+	var exitNodeCityCode string
+	if exitNode.Valid() {
+		exitNodeCityCode = exitNode.Hostinfo().Location().CityCode()
 	}
 
-	var exitNodeCountryCode string
-	found := make(set.Set[tailcfg.StableNodeID])
-	for id, peer := range status.Peers {
+	// Group Mullvad peers by city.
+	cityNodes := make(map[string][]tailcfg.NodeView)
+	for _, peer := range status.Peers {
 		if tsutil.IsMullvad(peer) {
-			found.Add(id)
-			exitNode := id == exitNodeID
-
-			row := page.getExitNodeRow(peer)
-			sw := row.row.ActivatableWidget().(*gtk.Switch)
-			sw.SetState(exitNode)
-			sw.SetActive(exitNode)
-
-			loc := peer.Hostinfo().Location()
-			countryCode := loc.CountryCode()
-			page.locations[countryCode].SetSubtitle("")
-
-			if exitNode {
-				subtitle = mullvadLongLocationName(loc)
-				exitNodeCountryCode = countryCode
-			}
+			cityCode := peer.Hostinfo().Location().CityCode()
+			cityNodes[cityCode] = append(cityNodes[cityCode], peer)
 		}
 	}
-	for id, row := range page.exitNodes {
-		if !found.Contains(id) {
-			delete(page.exitNodes, id)
+
+	var subtitle string
+	var exitNodeCountryCode string
+	found := make(set.Set[string])
+	for cityCode, nodes := range cityNodes {
+		found.Add(cityCode)
+
+		best := tsutil.BestMullvadNode(nodes)
+		cityRow := page.getCityRow(best)
+		cityRow.best = best.StableID()
+
+		active := exitNode.Valid() && tsutil.IsMullvad(exitNode) && cityCode == exitNodeCityCode
+
+		// Subtitle shows the node actually in use when active, otherwise the
+		// node that would be selected.
+		if active {
+			cityRow.row.SetSubtitle(exitNode.Hostinfo().Hostname())
+		} else {
+			cityRow.row.SetSubtitle(best.Hostinfo().Hostname())
+		}
+
+		sw := cityRow.row.ActivatableWidget().(*gtk.Switch)
+		sw.SetState(active)
+		sw.SetActive(active)
+
+		page.locations[cityRow.country].SetSubtitle("")
+		if active {
+			subtitle = mullvadLongLocationName(exitNode.Hostinfo().Location())
+			exitNodeCountryCode = cityRow.country
+		}
+	}
+
+	for cityCode, row := range page.cities {
+		if !found.Contains(cityCode) {
+			delete(page.cities, cityCode)
 
 			locRow := page.locations[row.country]
 			locRow.Remove(row.row)
@@ -155,16 +173,22 @@ func (page *MullvadPage) getLocationRow(loc tailcfg.LocationView) *adw.ExpanderR
 	return row
 }
 
-func (page *MullvadPage) getExitNodeRow(peer tailcfg.NodeView) *mullvadExitNodeRow {
-	if row, ok := page.exitNodes[peer.StableID()]; ok {
+func (page *MullvadPage) getCityRow(peer tailcfg.NodeView) *mullvadCityRow {
+	loc := peer.Hostinfo().Location()
+	cityCode := loc.CityCode()
+	if row, ok := page.cities[cityCode]; ok {
 		return row
 	}
 
-	info := peer.Hostinfo()
-
 	row := adw.NewSwitchRow()
-	row.SetTitle(info.Location().City())
-	row.SetSubtitle(info.Hostname())
+	row.SetTitle(loc.City())
+	row.SetSubtitle(peer.Hostinfo().Hostname())
+
+	cityRow := &mullvadCityRow{
+		country:  loc.CountryCode(),
+		cityCode: cityCode,
+		row:      row,
+	}
 
 	sw := row.ActivatableWidget().(*gtk.Switch)
 	sw.SetMarginTop(12)
@@ -182,9 +206,11 @@ func (page *MullvadPage) getExitNodeRow(peer tailcfg.NodeView) *mullvadExitNodeR
 			}
 		}
 
+		// Read the current best node at click time; Update keeps cityRow.best
+		// fresh on every poll.
 		var node tailcfg.StableNodeID
 		if s {
-			node = peer.StableID()
+			node = cityRow.best
 		}
 		err := tsutil.ExitNode(context.TODO(), node)
 		if err != nil {
@@ -195,19 +221,16 @@ func (page *MullvadPage) getExitNodeRow(peer tailcfg.NodeView) *mullvadExitNodeR
 		return true
 	})
 
-	page.getLocationRow(info.Location()).AddRow(row)
-
-	exitNodeRow := mullvadExitNodeRow{
-		country: info.Location().CountryCode(),
-		row:     row,
-	}
-	page.exitNodes[peer.StableID()] = &exitNodeRow
-	return &exitNodeRow
+	page.getLocationRow(loc).AddRow(row)
+	page.cities[cityCode] = cityRow
+	return cityRow
 }
 
-type mullvadExitNodeRow struct {
-	country string
-	row     *adw.SwitchRow
+type mullvadCityRow struct {
+	country  string // CountryCode, used to locate/clean up the country expander
+	cityCode string
+	row      *adw.SwitchRow
+	best     tailcfg.StableNodeID // best (highest-priority) node currently in the city
 }
 
 func mullvadLongLocationName(loc tailcfg.LocationView) string {
