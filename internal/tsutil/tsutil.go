@@ -2,6 +2,7 @@ package tsutil
 
 import (
 	"cmp"
+	"slices"
 
 	"tailscale.com/client/tailscale/apitype"
 	"tailscale.com/tailcfg"
@@ -58,4 +59,23 @@ func CompareWaitingFiles(f1, f2 apitype.WaitingFile) int {
 		cmp.Compare(f1.Name, f2.Name),
 		cmp.Compare(f1.Size, f2.Size),
 	)
+}
+
+// CompareMullvadNodes orders two Mullvad exit-node peers of the same city
+// best-first: the node with the higher Location.Priority wins. Ties are broken
+// by hostname so the order is stable and reproducible.
+func CompareMullvadNodes(p1, p2 tailcfg.NodeView) int {
+	h1 := p1.Hostinfo()
+	h2 := p2.Hostinfo()
+	return cmp.Or(
+		-cmp.Compare(h1.Location().Priority(), h2.Location().Priority()),
+		cmp.Compare(h1.Hostname(), h2.Hostname()),
+	)
+}
+
+// BestMullvadNode returns the highest-priority node from a non-empty slice of
+// same-city Mullvad peers (the minimum under CompareMullvadNodes). It panics if
+// nodes is empty; callers must only pass cities that have at least one node.
+func BestMullvadNode(nodes []tailcfg.NodeView) tailcfg.NodeView {
+	return slices.MinFunc(nodes, CompareMullvadNodes)
 }
